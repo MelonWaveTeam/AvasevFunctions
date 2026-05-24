@@ -144,7 +144,7 @@ class PdfToTxt:
         self.file_writer()
 
 if __name__ == "__main__":
-    path = "dataset/" #TODO путь до файла
+    path = "dataset/" # TODO путь до файла
     parser = PdfToTxt(path)
     parser.run()
 
