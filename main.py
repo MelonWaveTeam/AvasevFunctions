@@ -1,26 +1,49 @@
 import fitz
 import json
-import re
+import os
+from ollama import chat
 
 class PdfToTxt:
-    def __init__(self, file_name, FILTER):
+    def __init__(self, file_name):
         self.file_name = file_name
-        self.filter = FILTER
-        self.paragraphs_to_save = []
-        self.paragraphs_data = []
+        self.all_text = ""
+        self.pages_text = []
+        self.results = []
+        self.article_title = ""
+        self.author = ""
 
+    def get_metadata_from_llm(self, first_page_text):
+        prompt = f"""извлеки из текста название статьи и автора. верни json:
+{{"title": "", "author": ""}}
+текст: {first_page_text[:2000]}"""
 
-    def clean_word(self, word):
-        return re.sub(r'[.,!?;:()\[\]{}\"«»-]', '', word)
-
+        try:
+            response = chat(model='llama3.1:8b', messages=[
+                {'role': 'user', 'content': prompt}
+            ])
+            answer = response.message.content
+            import re
+            json_match = re.search(r'\{.*\}', answer, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                self.article_title = data.get("title", "")
+                self.author = data.get("author", "")
+        except:
+            self.article_title = ""
+            self.author = ""
 
     def pdf_reader(self):
         doc = fitz.open(self.file_name)
         global_pos = 0
 
-        for i in range(len(doc)):
+        first_page_text = doc[0].get_text()
+        self.get_metadata_from_llm(first_page_text)
+
+        start_page = 1
+        for i in range(start_page, len(doc)):
             page = doc[i]
             blocks = page.get_text("blocks")
+            page_text = ""
 
             for block in blocks:
                 if block[6] != 0:
@@ -46,56 +69,90 @@ class PdfToTxt:
                 if not cleaned_paragraph:
                     continue
 
-                start_idx = global_pos
-                end_idx = global_pos + len(cleaned_paragraph)
-                self.paragraphs_data.append({
-                    "paragraph": cleaned_paragraph,
-                    "start_index": start_idx,
-                    "end_index": end_idx,
-                    "page_number": i + 1
+                page_text += cleaned_paragraph + "  "
+
+            if page_text.strip():
+                self.pages_text.append({
+                    "page_num": i + 1,
+                    "text": page_text.strip(),
+                    "start": global_pos,
+                    "end": global_pos + len(page_text.strip())
                 })
-                global_pos += len(cleaned_paragraph) + 2
+                self.all_text += page_text + "\n"
+                global_pos += len(page_text.strip()) + 2
+
         doc.close()
 
+    def find_by_keywords(self):
+        keywords = ['непрерывн', 'гладк', 'разрыв', 'дифференцируем']
 
-    def add_filtered_words(self):
-        for i in self.paragraphs_data:
-            paragraph_text = i["paragraph"]
-            words = paragraph_text.split()
-            found = False
-            for w in words:
-                cleaned = self.clean_word(w)
-                lowered = cleaned.lower()
-                for root in self.filter:
-                    if root in lowered:
+        for page_info in self.pages_text:
+            page_text = page_info["text"]
+            page_start = page_info["start"]
+            page_num = page_info["page_num"]
+
+            sentences = page_text.split('. ')
+
+            for sent in sentences:
+                if not sent.strip():
+                    continue
+
+                found = False
+                for kw in keywords:
+                    if kw.lower() in sent.lower():
                         found = True
                         break
-                if found:
-                    break
-            if found:
-                self.paragraphs_to_save.append(i)
 
+                if found:
+                    sent_with_dot = sent + '.'
+                    pos = self.all_text.find(sent_with_dot, page_start, page_start + len(page_text))
+
+                    if pos == -1:
+                        pos = self.all_text.find(sent, page_start, page_start + len(page_text))
+
+                    if pos != -1:
+                        self.results.append({
+                            "text": sent_with_dot,
+                            "begin_index": pos,
+                            "end_index": pos + len(sent_with_dot),
+                            "page_number": page_num,
+                            "summary": "функция"
+                        })
 
     def file_writer(self):
         with open("words.jsonl", "a", encoding="utf-8") as f:
-            for para_info in self.paragraphs_to_save:
-                data = {
-                    "file": self.file_name,
-                    "paragraph": para_info["paragraph"],
-                    "start_index": para_info["start_index"],
-                    "end_index": para_info["end_index"],
-                    "page_number": para_info["page_number"]
-                }
-                f.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
-
+            data = {
+                "file_name": self.file_name,
+                "article_title": self.article_title,
+                "author": self.author,
+                "text": self.results
+            }
+            f.write(json.dumps(data, ensure_ascii=False, indent=4) + "\n")
 
     def run(self):
         self.pdf_reader()
-        self.add_filtered_words()
+
+        if not self.all_text.strip():
+            self.file_writer()
+            return
+
+        self.find_by_keywords()
+
+        if not self.results:
+            print("нет функций в файле")
+
         self.file_writer()
 
+if __name__ == "__main__":
+    path = "dataset/" #TODO путь до файла
+    parser = PdfToTxt(path)
+    parser.run()
 
-file_name = "dataset/elibrary_82514926_23581521.pdf"
-FILTER = ['непрервын', 'функци', 'разрыв', 'f(x)', 'гладк', 'дифференцируем']
-pdftotxt = PdfToTxt(file_name, FILTER)
-pdftotxt.run()
+    # folder = "dataset"
+    #
+    # for file in os.listdir(folder):
+    #     if file.endswith(".pdf"):
+    #         path = os.path.join(folder, file)
+    #         print(file)
+    #         parser = PdfToTxt(path)
+    #         parser.run()
