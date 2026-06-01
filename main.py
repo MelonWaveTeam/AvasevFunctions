@@ -2,6 +2,7 @@ import fitz
 import json
 import os
 from ollama import chat
+import re
 
 class PdfToTxt:
     def __init__(self, file_name):
@@ -42,34 +43,26 @@ class PdfToTxt:
         start_page = 1
         for i in range(start_page, len(doc)):
             page = doc[i]
-            blocks = page.get_text("blocks")
-            page_text = ""
 
-            for block in blocks:
-                if block[6] != 0:
-                    continue
-                raw_text = block[4]
-                if not raw_text.strip():
-                    continue
+            page_text_raw = page.get_text()
+            page_text_raw = re.sub(r'[-￻-�]', '', page_text_raw)
+            lines = page_text_raw.split('\n')
+            paragraphs = []
+            current_para = []
 
-                cleaned = raw_text.replace('\n', ' ')
-                cleaned = cleaned.replace('\r', ' ')
-                cleaned = cleaned.replace('\t', ' ')
-                cleaned_paragraph = []
-                last_was_space = False
-                for ch in cleaned:
-                    if ch == ' ':
-                        if not last_was_space:
-                            cleaned_paragraph.append(' ')
-                            last_was_space = True
-                    else:
-                        cleaned_paragraph.append(ch)
-                        last_was_space = False
-                cleaned_paragraph = ''.join(cleaned_paragraph).strip()
-                if not cleaned_paragraph:
-                    continue
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    if current_para:
+                        paragraphs.append(' '.join(current_para))
+                        current_para = []
+                else:
+                    current_para.append(line)
 
-                page_text += cleaned_paragraph + "  "
+            if current_para:
+                paragraphs.append(' '.join(current_para))
+
+            page_text = '\n\n'.join(paragraphs)
 
             if page_text.strip():
                 self.pages_text.append({
@@ -78,7 +71,7 @@ class PdfToTxt:
                     "start": global_pos,
                     "end": global_pos + len(page_text.strip())
                 })
-                self.all_text += page_text + "\n"
+                self.all_text += page_text + "\n\n"
                 global_pos += len(page_text.strip()) + 2
 
         doc.close()
@@ -86,39 +79,37 @@ class PdfToTxt:
     def find_by_keywords(self):
         keywords = ['непрерывн', 'гладк', 'разрыв', 'дифференцируем']
 
+        all_paragraphs = []
+
         for page_info in self.pages_text:
             page_text = page_info["text"]
             page_start = page_info["start"]
             page_num = page_info["page_num"]
 
-            sentences = page_text.split('. ')
+            paragraphs = page_text.split('\n\n')
+            current_pos = page_start
 
-            for sent in sentences:
-                if not sent.strip():
+            for para in paragraphs:
+                if not para.strip():
+                    current_pos += len(para) + 2
                     continue
 
                 found = False
                 for kw in keywords:
-                    if kw.lower() in sent.lower():
+                    if kw.lower() in para.lower():
                         found = True
                         break
 
                 if found:
-                    sent_with_dot = sent + '.'
-                    pos = self.all_text.find(sent_with_dot, page_start, page_start + len(page_text))
+                    self.results.append({
+                        "text": para,
+                        "begin_index": current_pos,
+                        "end_index": current_pos + len(para),
+                        "page_number": page_num,
+                        "summary": "функция"
+                    })
 
-                    if pos == -1:
-                        pos = self.all_text.find(sent, page_start, page_start + len(page_text))
-
-                    if pos != -1:
-                        self.results.append({
-                            "text": sent_with_dot,
-                            "begin_index": pos,
-                            "end_index": pos + len(sent_with_dot),
-                            "page_number": page_num,
-                            "summary": "функция"
-                        })
-
+                current_pos += len(para) + 2
     def file_writer(self):
         with open("words.jsonl", "a", encoding="utf-8") as f:
             data = {
@@ -144,15 +135,15 @@ class PdfToTxt:
         self.file_writer()
 
 if __name__ == "__main__":
-    path = "dataset/" # TODO путь до файла
-    parser = PdfToTxt(path)
-    parser.run()
+    # path = "dataset/elibrary_49326207_22037942.pdf" # TODO путь до файла
+    # parser = PdfToTxt(path)
+    # parser.run()
 
-    # folder = "dataset"
-    #
-    # for file in os.listdir(folder):
-    #     if file.endswith(".pdf"):
-    #         path = os.path.join(folder, file)
-    #         print(file)
-    #         parser = PdfToTxt(path)
-    #         parser.run()
+    folder = "dataset"
+
+    for file in os.listdir(folder):
+        if file.endswith(".pdf"):
+            path = os.path.join(folder, file)
+            print(file)
+            parser = PdfToTxt(path)
+            parser.run()
